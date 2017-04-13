@@ -1,0 +1,8 @@
+# Training files
+*.db
+*.mp3
+.idea/
+
+# Temporary files
+*.*~
+database.json
