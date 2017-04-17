@@ -17,6 +17,10 @@ import time
 import socket
 import select
 
+#Threads
+import threading
+
+
 # Библиотека Chatterbot для простого лингвистического ИИ
 # https://github.com/gunthercox/ChatterBot
 from chatterbot import ChatBot
@@ -43,10 +47,17 @@ class Statement:
 class Speech_AI:
     def __init__(self, server_ip, command_port, text_port, google_treshold = 0.5, chatterbot_treshold = 0.45):
         self._recognizer = sr.Recognizer()
+        #self._recognizer.energy_threshold = 4000
         self._microphone = sr.Microphone()
 
         self.google_treshold = google_treshold          # minimial allowed confidence in speech recognition
         self.chatterbot_treshold = chatterbot_treshold  # ---/--- in chatterbot
+
+	# Talking from socket
+        self.isTalking = False
+        self.isTalkingLock = threading.Lock()
+        self.ignoreNext = False
+        self.talkingQueue = []
 
         is_need_train = not self.is_db_exists()
         self.bot = ChatBot(name="Robby",
@@ -77,6 +88,7 @@ class Speech_AI:
         self.be_quiet = False
 
 
+
     def create_sockets(self, server_ip, command_port, text_port):
         # Commands socket (to send command to FRUND)
         self.server_ip = server_ip
@@ -86,46 +98,98 @@ class Speech_AI:
 
 
         # Text socket (to say text from FRUND)
-        self.my_ip = '0.0.0.0'  # "192.168.1.44"
+        self.my_ip = '0.0.0.0'
         self.my_port = text_port
         self.me = (self.my_ip, self.my_port)
         self.text_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.text_socket.bind(self.me)
-        self.text_socket.setblocking(0)
-        self.wait_text_timeout = 0.1
 
+        #self.text_socket.setblocking(0)
+        #self.wait_text_timeout = 0.1
+
+        # start receiving thread
+        t1 = threading.Thread(target=self.socket_receive_thread)
+        t1.start()
+
+    # Set IsTalking with thread-safe
+    def setIsTalking(self, value):
+        self.isTalkingLock.acquire()
+        self.isTalking = value
+        self.isTalkingLock.release()
+
+    # Get IsTalking with thread-safe
+    def getIsTalking(self):
+        self.isTalkingLock.acquire()
+        value = self.isTalking
+        self.isTalkingLock.release()
+        return value
+
+    # Listen socket and talking
+    def socket_receive_thread(self):
+        while(True):
+
+            if self.getIsTalking():
+                continue
+
+            while len(self.talkingQueue)>0:
+                text = self.talkingQueue.pop(0)
+                print('[TextSocket]: From queue')
+                print('[TextSocket]: {}'.format(text))
+                self.say(text)
+                self.ignoreNext = True
+                
+
+            print('[TextSocket] Попытка приема текста...')
+            ready = select.select([self.text_socket], [], [])
+            if ready[0]:
+                print("[TextSocket] Текст принят")
+                data, addr = self.text_socket.recvfrom(4096)
+                text_to_speak = data.decode("utf-8")
+                print('[TextSocket]: {}'.format(text_to_speak))
+
+                if not self.getIsTalking():
+                    self.ignoreNext = True
+                    self.say(text_to_speak)
+                else:
+                    print('[TextSocket]: already talking') 
+                    self.talkingQueue.append(text_to_speak)
+
+            time.sleep(0.5)
 
     def work(self):
         print('Минутку тишины, пожалуйста...')
         with self._microphone as source:
             self._recognizer.adjust_for_ambient_noise(source)
 
-        while True:
-            print('[TextSocket] Попытка приема текста...')
-            ready = select.select([self.text_socket], [], [], self.wait_text_timeout)
-            print(ready)
-            if ready[0]:
-                print("[TextSocket] Текст принят")
-                data, addr = self.text_socket.recvfrom(4096)
-                text_to_speak = data.decode("utf-8")
-                self.say(text_to_speak)
-                continue
-            else:
-                print('[TextSocket] Нет текста')
-
+        while True:            
             print('Скажи что - нибудь!')
+
             with self._microphone as source:
                 audio = self._recognizer.listen(source)
+
+            if self.ignoreNext:
+                self.ignoreNext = False
+                continue
+
             print("Понял, идет распознавание...")
             statements = self.recognize(audio)
             print('Выражения ', statements)
             best_statement = self.choose_best_statement(statements)
             print('Вы сказали: ', best_statement)
             result = self.process_statement(best_statement, statements)
+
+            # I hate 'Sorry, I hear you bad'
+            if result=='':
+                continue
+
             print(self.bot.name, " ответил: ", result)
 
             if not self.be_quiet:
+                self.setIsTalking(True)
                 self.say(str(result))
+                self.setIsTalking(False)
+                #self.isTalkingEvent.set()
+                
 
             print()
 
@@ -167,12 +231,13 @@ class Speech_AI:
         return False
 
     def send_command(self, command):
-        self.command_sock.sendto(str(command).encode(), self.server)
+        #self.command_sock.sendto(str(command).encode(), self.server)
+        self.command_sock.sendto(bytes([command]), self.server)
 
     # A lot of cool possibilities can be impemented here (IoT, CV, ...)
     def process_statement(self, best_statement, statements):
         if best_statement is None or best_statement.confidence < self.google_treshold:
-            answer = "Простите, вас плохо слышно"
+            answer = '' #"Простите, вас плохо слышно"
         else:
             command_recognized = False
             for st in statements:
@@ -242,7 +307,7 @@ class Speech_AI:
 
 
 def main():
-    ai = Speech_AI(server_ip="192.168.1.10", command_port=5005, text_port=5004)
+    ai = Speech_AI(server_ip="192.169.1.1", command_port=5005, text_port=5004) #5004
     try:
         ai.work()
     except KeyboardInterrupt:
