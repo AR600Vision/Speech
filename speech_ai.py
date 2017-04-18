@@ -111,6 +111,10 @@ class Speech_AI:
         t1 = threading.Thread(target=self.socket_receive_thread)
         t1.start()
 
+    def close_sockets(self):
+        self.command_sock.close()
+        self.text_socket.close()
+
     # Set IsTalking with thread-safe
     def setIsTalking(self, value):
         self.isTalkingLock.acquire()
@@ -156,10 +160,13 @@ class Speech_AI:
 
             time.sleep(0.5)
 
+
     def work(self):
         print('Минутку тишины, пожалуйста...')
         with self._microphone as source:
             self._recognizer.adjust_for_ambient_noise(source)
+        # self._recognizer.energy_threshold = 8000
+        # self._recognizer.dynamic_energy_threshold = True
 
         while True:            
             print('Скажи что - нибудь!')
@@ -296,6 +303,8 @@ class Speech_AI:
 
         # self._clean_up()
         print("Завершение работы")
+        self.close_sockets()
+        print("Sockets are closed")
 
     def clean_up(self):
         os.remove(self._mp3_name)
